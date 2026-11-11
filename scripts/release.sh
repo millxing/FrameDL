@@ -98,7 +98,7 @@ if [ "$MODE" = "--install" ] || [ "$MODE" = "--install-only" ]; then
   fi
   # A different account can also have FrameDL open. This script cannot quit it,
   # and to replace the app below a running copy can make that copy fail.
-  OTHERS="$(ps -axo user=,command= | awk -v p="$RUNNING" 'index($0, p) { print $1 }' | sort -u | tr '\n' ' ')"
+  OTHERS="$(ps -axo user=,command= | awk -v p="$RUNNING" '$2 == p { print $1 }' | sort -u | tr '\n' ' ')"
   if [ -n "$OTHERS" ]; then
     echo "FrameDL is open in a different account: $OTHERS"
     echo "Quit FrameDL in that account, then run this script again with --install-only."
