@@ -8,7 +8,7 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { spawn, execSync } = require("child_process");
+const { spawn, execSync, execFile } = require("child_process");
 const os = require("os");
 const https = require("https");
 const http = require("http");
@@ -20,9 +20,14 @@ app.setPath("userData", path.join(app.getPath("appData"), "yt-dlp-manager"));
 const DATA_PATH = path.join(app.getPath("userData"), "data.json");
 const USER_BIN_PATH = path.join(app.getPath("userData"), "bin");
 
-// GitHub release URL for standalone yt-dlp macOS binary
-const YTDLP_RELEASE_URL =
-  "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos";
+// yt-dlp for macOS, folder build: a program file plus an "_internal" folder.
+// It starts in less than a second. The one-file build unpacks itself at each
+// start, which takes many seconds.
+const YTDLP_ZIP_URL =
+  "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos.zip";
+// This page redirects to .../releases/tag/<version of the latest release>
+const YTDLP_LATEST_URL = "https://github.com/yt-dlp/yt-dlp/releases/latest";
+const YTDLP_EXE = "yt-dlp_macos";
 
 let mainWindow;
 
@@ -44,13 +49,32 @@ function getBundledBinPath() {
   return path.join(__dirname, "bin");
 }
 
-function getYtDlpPath() {
-  // Check for user-updated binary first, then fall back to bundled
-  const userBinary = path.join(USER_BIN_PATH, "yt-dlp_macos");
-  if (fs.existsSync(userBinary)) {
-    return userBinary;
+// Each yt-dlp folder has a version.txt file. Versions are dates
+// (2026.10.26), so a text comparison gives the newer one.
+function readYtDlpVersion(dir) {
+  try {
+    return fs.readFileSync(path.join(dir, "version.txt"), "utf8").trim();
+  } catch {
+    return "";
   }
-  return path.join(getBundledBinPath(), "yt-dlp_macos");
+}
+
+// Use the copy from the "Update" button only if it is newer than the copy in
+// the app. Thus a new app version is not held back by an old update.
+function getYtDlpDir() {
+  const bundled = path.join(getBundledBinPath(), "yt-dlp");
+  const updated = path.join(USER_BIN_PATH, "yt-dlp");
+  if (
+    fs.existsSync(path.join(updated, YTDLP_EXE)) &&
+    readYtDlpVersion(updated) > readYtDlpVersion(bundled)
+  ) {
+    return updated;
+  }
+  return bundled;
+}
+
+function getYtDlpPath() {
+  return path.join(getYtDlpDir(), YTDLP_EXE);
 }
 
 function getFfmpegDir() {
@@ -204,9 +228,18 @@ function sendToWindow(channel, payload) {
   }
 }
 
+// A video title for the queue lists: text only, no control characters.
+function cleanTitle(value) {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+    .trim()
+    .slice(0, 200);
+}
+
 // Add a URL from the browser extension to the download queue.
 // Returns an error string, or null on success.
-function queueExternal(rawUrl, rawFormat) {
+function queueExternal(rawUrl, rawFormat, rawTitle) {
   let parsed;
   try {
     parsed = new URL(String(rawUrl));
@@ -218,7 +251,12 @@ function queueExternal(rawUrl, rawFormat) {
   }
 
   // On a "video in a playlist" URL, the extension downloads only the video.
-  addToQueue({ url: parsed.href, format: rawFormat, noPlaylist: true });
+  addToQueue({
+    url: parsed.href,
+    format: rawFormat,
+    noPlaylist: true,
+    title: rawTitle,
+  });
   return null;
 }
 
@@ -254,7 +292,8 @@ app.on("open-url", (event, link) => {
     trustToken(parsed.searchParams.get("token"));
     const error = queueExternal(
       parsed.searchParams.get("url"),
-      parsed.searchParams.get("format")
+      parsed.searchParams.get("format"),
+      parsed.searchParams.get("title")
     );
     if (error) console.error("Rejected link:", error);
   } catch (e) {
@@ -293,7 +332,7 @@ function startBridgeServer() {
           // The extension then tries the next port, or uses a framedl:// link.
           return reply(403, { ok: false, error: "Unknown token" });
         }
-        const error = queueExternal(payload.url, payload.format);
+        const error = queueExternal(payload.url, payload.format, payload.title);
         if (error) return reply(400, { ok: false, error });
         reply(200, { ok: true });
       });
@@ -366,37 +405,105 @@ ipcMain.handle("update-dependencies", async () => {
   };
 });
 
-ipcMain.handle("install-ytdlp", async () => {
-  try {
-    ensureBinDir();
-    const destPath = path.join(USER_BIN_PATH, "yt-dlp_macos");
-    await downloadFile(YTDLP_RELEASE_URL, destPath);
-    const version = await runCommand(`"${destPath}" --version`);
-    return { success: true, version };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});
+function runFile(file, args) {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { timeout: 120000 }, (error, stdout, stderr) => {
+      if (error) reject(new Error(stderr.trim() || error.message));
+      else resolve(stdout.trim());
+    });
+  });
+}
 
-ipcMain.handle("update-ytdlp", async () => {
+// Download the latest yt-dlp into the user data folder. The new copy replaces
+// the old one only after it ran correctly.
+let ytDlpInstallRunning = false;
+async function installLatestYtDlp() {
+  if (ytDlpInstallRunning) {
+    return { success: false, error: "An update is already in progress." };
+  }
+  if (activeProcs.size > 0) {
+    return {
+      success: false,
+      error: "Downloads are in progress. Update yt-dlp when they are complete.",
+    };
+  }
+  ytDlpInstallRunning = true;
+  const zipPath = path.join(USER_BIN_PATH, "yt-dlp-new.zip");
+  const newDir = path.join(USER_BIN_PATH, "yt-dlp-new");
+  const finalDir = path.join(USER_BIN_PATH, "yt-dlp");
   try {
     ensureBinDir();
-    const destPath = path.join(USER_BIN_PATH, "yt-dlp_macos");
-    await downloadFile(YTDLP_RELEASE_URL, destPath);
-    const version = await runCommand(`"${destPath}" --version`);
+    fs.rmSync(newDir, { recursive: true, force: true });
+    await downloadFile(YTDLP_ZIP_URL, zipPath);
+    await runFile("/usr/bin/ditto", ["-x", "-k", zipPath, newDir]);
+    const version = await runFile(path.join(newDir, YTDLP_EXE), ["--version"]);
+    fs.writeFileSync(path.join(newDir, "version.txt"), version + "\n");
+
+    if (activeProcs.size > 0) {
+      throw new Error("A download started during the update. Try again later.");
+    }
+    fs.rmSync(finalDir, { recursive: true, force: true });
+    fs.renameSync(newDir, finalDir);
+    // The one-file copy from app versions before 1.3.0
+    fs.rmSync(path.join(USER_BIN_PATH, YTDLP_EXE), { force: true });
     return { success: true, version };
   } catch (error) {
+    fs.rmSync(newDir, { recursive: true, force: true });
     return { success: false, error: error.message };
+  } finally {
+    fs.rmSync(zipPath, { force: true });
+    ytDlpInstallRunning = false;
   }
-});
+}
+
+ipcMain.handle("install-ytdlp", installLatestYtDlp);
+ipcMain.handle("update-ytdlp", installLatestYtDlp);
+
+async function getYtDlpVersion() {
+  const dir = getYtDlpDir();
+  return (
+    readYtDlpVersion(dir) ||
+    (await runFile(path.join(dir, YTDLP_EXE), ["--version"]))
+  );
+}
 
 ipcMain.handle("get-version", async () => {
   try {
-    const ytdlp = getYtDlpPath();
-    const version = await runCommand(`"${ytdlp}" --version`);
-    return { installed: true, version };
+    return { installed: true, version: await getYtDlpVersion() };
   } catch {
     return { installed: false };
+  }
+});
+
+// Ask GitHub for the version of the latest yt-dlp release. This reads only
+// the redirect address, so it does not use the rate-limited GitHub API.
+function fetchLatestYtDlpVersion() {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      YTDLP_LATEST_URL,
+      { headers: { "User-Agent": "FrameDL" }, timeout: 15000 },
+      (response) => {
+        response.resume();
+        const match = /\/releases\/tag\/(\d{4}\.\d{2}\.\d{2}(?:\.\d+)?)$/.exec(
+          response.headers.location || ""
+        );
+        if (match) resolve(match[1]);
+        else reject(new Error(`No version in reply (HTTP ${response.statusCode})`));
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error("Timeout")));
+    req.on("error", reject);
+  });
+}
+
+// The window calls this at start and then one time each day.
+ipcMain.handle("check-ytdlp-update", async () => {
+  try {
+    const current = await getYtDlpVersion();
+    const latest = await fetchLatestYtDlpVersion();
+    return { success: true, current, latest, available: latest > current };
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 });
 
@@ -485,14 +592,16 @@ let queue = (Array.isArray(appData.queue) ? appData.queue : [])
     url: item.url,
     format: item.format === "mp3" ? "mp3" : "video",
     noPlaylist: !!item.noPlaylist,
+    title: cleanTitle(item.title),
     status: "pending",
   }));
 
 // The queue data that the window shows
 function publicQueue() {
-  return queue.map(({ id, url, format, status, percent, size, speed, eta }) => ({
+  return queue.map(({ id, url, title, format, status, percent, size, speed, eta }) => ({
     id,
     url,
+    title: title || "",
     format,
     status,
     percent: percent || 0,
@@ -503,9 +612,10 @@ function publicQueue() {
 }
 
 function queueChanged() {
-  appData.queue = queue.map(({ id, url, format, noPlaylist }) => ({
+  appData.queue = queue.map(({ id, url, title, format, noPlaylist }) => ({
     id,
     url,
+    title,
     format,
     noPlaylist,
   }));
@@ -513,12 +623,13 @@ function queueChanged() {
   sendToWindow("queue-changed", publicQueue());
 }
 
-function addToQueue({ url, format, noPlaylist }) {
+function addToQueue({ url, format, noPlaylist, title }) {
   queue.push({
     id: `${Date.now()}-${idCounter++}`,
     url,
     format: format === "mp3" ? "mp3" : "video",
     noPlaylist: !!noPlaylist,
+    title: cleanTitle(title),
     status: "pending",
   });
   queueChanged();
@@ -577,6 +688,8 @@ function runDownload(item) {
     "--no-simulate",
     "--print",
     "after_move:filepath=%(filepath)s",
+    "--print",
+    "before_dl:title=%(title)s",
     "--ffmpeg-location",
     ffmpegDir,
   ];
@@ -604,7 +717,7 @@ function runDownload(item) {
   const proc = spawn(getYtDlpPath(), args, { env });
   activeProcs.set(id, proc);
 
-  let title = url;
+  let title = item.title || url;
   let filePath = "";
   let lastError = "";
   const errorLines = [];
@@ -613,6 +726,14 @@ function runDownload(item) {
     const text = data.toString();
     for (const line of text.split(/\r?\n/)) {
       if (!line) continue;
+
+      // Video title, printed before the download starts
+      const titleMatch = line.match(/^title=(.+)$/);
+      if (titleMatch) {
+        item.title = cleanTitle(titleMatch[1]);
+        queueChanged();
+        continue;
+      }
 
       // Final post-processing path (set after merge/audio extraction)
       const finalPath = line.match(/^filepath=(.+)$/);

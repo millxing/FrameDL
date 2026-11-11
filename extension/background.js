@@ -49,7 +49,7 @@ async function send(tab, format) {
       response = await fetch(`http://127.0.0.1:${port}/download`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: tab.url, format, token }),
+        body: JSON.stringify({ url: tab.url, format, token, title: tab.title || "" }),
       });
     } catch {
       continue; // Nothing listens on this port.
@@ -68,7 +68,8 @@ async function send(tab, format) {
   //    adds the download and learns the token. The browser asks for approval.
   const link =
     `framedl://download?url=${encodeURIComponent(tab.url)}` +
-    `&format=${format}&token=${token}`;
+    `&format=${format}&token=${token}` +
+    `&title=${encodeURIComponent((tab.title || "").slice(0, 200))}`;
   try {
     await chrome.tabs.update(tab.id, { url: link });
     flash(tab, "...", "#1565c0", "FrameDL: opening the app");

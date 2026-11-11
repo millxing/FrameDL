@@ -36,6 +36,8 @@ async function init() {
   await loadHistory();
   queue = await window.ytdlp.getQueue();
   renderAll();
+  checkForYtDlpUpdate();
+  setInterval(checkForYtDlpUpdate, 24 * 60 * 60 * 1000);
 }
 
 async function checkVersion() {
@@ -50,6 +52,47 @@ async function checkVersion() {
     versionBadge.classList.remove("installed");
   }
 }
+
+// Show in the header when a newer yt-dlp is available. Click to install it.
+let updateAvailable = false;
+
+async function checkForYtDlpUpdate() {
+  const result = await window.ytdlp.checkYtDlpUpdate();
+  updateAvailable = !!(result.success && result.available);
+  versionBadge.classList.toggle("update-available", updateAvailable);
+  if (updateAvailable) {
+    versionBadge.textContent = `v${result.current} • Update to ${result.latest}`;
+    versionBadge.title = "Click to update yt-dlp";
+  } else {
+    versionBadge.title = "";
+  }
+}
+
+async function installYtDlpUpdate(startText) {
+  installStatusEl.textContent = startText;
+  installStatusEl.className = "status-message";
+
+  const result = await window.ytdlp.update();
+
+  if (result.success) {
+    installStatusEl.textContent = `yt-dlp is now v${result.version}`;
+    installStatusEl.className = "status-message success";
+  } else {
+    installStatusEl.textContent = `Error: ${result.error}`;
+    installStatusEl.className = "status-message error";
+  }
+  await checkVersion();
+  await checkForYtDlpUpdate();
+  return result;
+}
+
+versionBadge.addEventListener("click", async () => {
+  if (!updateAvailable) return;
+  updateAvailable = false; // Ignore more clicks during the update.
+  versionBadge.textContent = "Updating yt-dlp...";
+  const result = await installYtDlpUpdate("Downloading latest yt-dlp...");
+  if (!result.success) alert(`yt-dlp update failed.\n${result.error}`);
+});
 
 async function loadSettings() {
   const settings = await window.ytdlp.getSettings();
@@ -144,7 +187,7 @@ function renderQueue() {
       (item) => `
     <div class="queue-item" data-id="${escapeHtml(item.id)}">
       <div class="queue-item-header">
-        <span class="queue-item-title">${escapeHtml(item.url)}</span>
+        <span class="queue-item-title" title="${escapeHtml(item.url)}">${escapeHtml(item.title || item.url)}</span>
         <span class="queue-item-format">${formatLabel(item.format)}</span>
       </div>
       <div class="queue-item-actions">
@@ -179,7 +222,7 @@ function renderActiveDownloads() {
       (d) => `
     <div class="download-item" data-id="${escapeHtml(d.id)}">
       <div class="download-item-header">
-        <span class="download-item-title">${escapeHtml(d.url)}</span>
+        <span class="download-item-title" title="${escapeHtml(d.url)}">${escapeHtml(d.title || d.url)}</span>
         <span class="download-item-format">${formatLabel(d.format)}</span>
       </div>
       <div class="progress-container">
@@ -260,37 +303,11 @@ document.getElementById("open-folder").addEventListener("click", () => {
 });
 
 // Settings handlers
-document.getElementById("fresh-install").addEventListener("click", async () => {
-  installStatusEl.textContent = "Downloading latest yt-dlp binary...";
-  installStatusEl.className = "status-message";
-
-  const result = await window.ytdlp.install();
-
-  if (result.success) {
-    installStatusEl.textContent = `Successfully installed yt-dlp v${result.version}`;
-    installStatusEl.className = "status-message success";
-    checkVersion();
-  } else {
-    installStatusEl.textContent = `Error: ${result.error}`;
-    installStatusEl.className = "status-message error";
-  }
-});
-
-document.getElementById("update-ytdlp").addEventListener("click", async () => {
-  installStatusEl.textContent = "Downloading latest yt-dlp binary...";
-  installStatusEl.className = "status-message";
-
-  const result = await window.ytdlp.update();
-
-  if (result.success) {
-    installStatusEl.textContent = `Successfully updated to v${result.version}`;
-    installStatusEl.className = "status-message success";
-    checkVersion();
-  } else {
-    installStatusEl.textContent = `Error: ${result.error}`;
-    installStatusEl.className = "status-message error";
-  }
-});
+for (const buttonId of ["fresh-install", "update-ytdlp"]) {
+  document.getElementById(buttonId).addEventListener("click", () => {
+    installYtDlpUpdate("Downloading latest yt-dlp...");
+  });
+}
 
 document.querySelectorAll('input[name="cookie-browser"]').forEach((radio) => {
   radio.addEventListener("change", (e) => {

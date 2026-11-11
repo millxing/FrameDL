@@ -56,6 +56,12 @@ header h1 {
   color: #000;
 }
 
+.badge.update-available {
+  background: #f0b429;
+  color: #000;
+  cursor: pointer;
+}
+
 .badge.not-installed {
   background: var(--danger);
 }

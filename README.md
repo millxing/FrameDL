@@ -10,7 +10,8 @@ FrameDL is a window on top of [yt-dlp](https://github.com/yt-dlp/yt-dlp). It inc
 - Queue with three downloads at a time. Items that are not complete start again at the next launch.
 - Downloads continue when the window is closed. A notification shows the result.
 - Option to prefer H.264 video, which plays immediately in QuickTime.
-- Update yt-dlp from the Settings tab.
+- The app checks for a new yt-dlp each day. Click the yellow version badge to install it, or use the Settings tab.
+- The queue shows video titles.
 - Browser extension for Brave and Chrome.
 
 ## Requirements
@@ -72,7 +73,7 @@ The release script needs a "Developer ID Application" certificate in the login k
 ## Limits
 
 - yt-dlp does not support all sites, and it cannot download video that has DRM.
-- Sites change frequently. If downloads fail, update yt-dlp in the Settings tab first.
+- Sites change frequently. If downloads fail, update yt-dlp first.
 - Security software that protects the Downloads folder can block yt-dlp. Allow FrameDL in that software.
 
 ## Legal

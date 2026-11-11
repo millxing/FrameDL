@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("ytdlp", {
   install: () => ipcRenderer.invoke("install-ytdlp"),
   update: () => ipcRenderer.invoke("update-ytdlp"),
   getVersion: () => ipcRenderer.invoke("get-version"),
+  checkYtDlpUpdate: () => ipcRenderer.invoke("check-ytdlp-update"),
 
   setCookieBrowser: (browser) =>
     ipcRenderer.invoke("set-cookie-browser", browser),
