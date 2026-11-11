@@ -1,4 +1,11 @@
-const { app, BrowserWindow, ipcMain, dialog, shell } = require("electron");
+const {
+  app,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  shell,
+  Notification,
+} = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { spawn, execSync } = require("child_process");
@@ -25,8 +32,6 @@ let mainWindow;
 // starts the app and delivers the URL through the "open-url" event.
 const BRIDGE_PORT = 47631;
 const URL_SCHEME = "framedl";
-const pendingExternal = [];
-let rendererReady = false;
 
 // Binary resolution
 function getBundledBinPath() {
@@ -172,25 +177,27 @@ function createWindow() {
     },
   });
 
-  mainWindow.webContents.on("did-start-loading", () => {
-    rendererReady = false;
-  });
-  mainWindow.webContents.on("did-finish-load", () => {
-    rendererReady = true;
-    flushExternal();
-  });
   mainWindow.on("closed", () => {
     mainWindow = null;
-    rendererReady = false;
   });
 
   mainWindow.loadFile("index.html");
 }
 
-function flushExternal() {
-  if (!mainWindow || !rendererReady) return;
-  while (pendingExternal.length > 0) {
-    mainWindow.webContents.send("external-download", pendingExternal.shift());
+function showWindow() {
+  if (!mainWindow) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+// The window can be closed while downloads run. Send only if it exists.
+function sendToWindow(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
   }
 }
 
@@ -207,15 +214,8 @@ function queueExternal(rawUrl, rawFormat) {
     return "Only http and https URLs are supported";
   }
 
-  pendingExternal.push({
-    url: parsed.href,
-    format: rawFormat === "mp3" ? "mp3" : "video",
-  });
-
-  if (app.isReady()) {
-    if (!mainWindow) createWindow();
-    else flushExternal();
-  }
+  // On a "video in a playlist" URL, the extension downloads only the video.
+  addToQueue({ url: parsed.href, format: rawFormat, noPlaylist: true });
   return null;
 }
 
@@ -287,6 +287,17 @@ app.whenReady().then(() => {
   ensureBinaryPermissions();
   createWindow();
   startBridgeServer();
+  // Start items that stayed in the queue from the last session.
+  processQueue();
+});
+
+// Stop yt-dlp when the app quits. The items stay in the saved queue and
+// start again at the next launch.
+app.on("before-quit", () => {
+  quitting = true;
+  for (const proc of activeProcs.values()) {
+    proc.kill("SIGTERM");
+  }
 });
 
 app.on("window-all-closed", () => {
@@ -420,180 +431,299 @@ ipcMain.handle("open-file", (_, filePath) => {
   shell.openPath(filePath);
 });
 
-// Active downloads tracking
-const activeDownloads = new Map();
+// Download queue.
+// The main process owns the queue. Thus downloads continue when the window is
+// closed, and items that are not complete stay in the queue after a restart.
+const MAX_CONCURRENT = 3;
+const activeProcs = new Map(); // item id -> yt-dlp process
+let quitting = false;
+let idCounter = 0;
 
-ipcMain.handle(
-  "start-download",
-  async (_, { id, url, format, playlistIndex, noPlaylist }) => {
-    const ytdlp = getYtDlpPath();
-    const ffmpegDir = getFfmpegDir();
-    const outputTemplate = path.join(
-      appData.settings.downloadPath,
-      appData.settings.filenameTemplate
-    );
+// Items from the last session start again. yt-dlp continues partial files.
+let queue = (Array.isArray(appData.queue) ? appData.queue : [])
+  .filter((item) => item && item.id && typeof item.url === "string")
+  .map((item) => ({
+    id: String(item.id),
+    url: item.url,
+    format: item.format === "mp3" ? "mp3" : "video",
+    noPlaylist: !!item.noPlaylist,
+    status: "pending",
+  }));
 
-    const args = [
-      url,
-      "-o",
-      outputTemplate,
-      "--newline",
-      "--no-simulate",
-      "--print",
-      "after_move:filepath=%(filepath)s",
-      "--ffmpeg-location",
-      ffmpegDir,
-    ];
+// The queue data that the window shows
+function publicQueue() {
+  return queue.map(({ id, url, format, status, percent, size, speed, eta }) => ({
+    id,
+    url,
+    format,
+    status,
+    percent: percent || 0,
+    size: size || "",
+    speed: speed || "",
+    eta: eta || "",
+  }));
+}
 
-    if (format === "mp3") {
-      args.push("-x", "--audio-format", "mp3", "--audio-quality", "0");
-    } else {
-      args.push("-f", videoFormatFor(appData.settings), "--merge-output-format", "mp4");
-    }
+function queueChanged() {
+  appData.queue = queue.map(({ id, url, format, noPlaylist }) => ({
+    id,
+    url,
+    format,
+    noPlaylist,
+  }));
+  saveData(appData);
+  sendToWindow("queue-changed", publicQueue());
+}
 
-    if (appData.settings.cookieBrowser) {
-      args.push("--cookies-from-browser", appData.settings.cookieBrowser);
-    }
+function addToQueue({ url, format, noPlaylist }) {
+  queue.push({
+    id: `${Date.now()}-${idCounter++}`,
+    url,
+    format: format === "mp3" ? "mp3" : "video",
+    noPlaylist: !!noPlaylist,
+    status: "pending",
+  });
+  queueChanged();
+  processQueue();
+}
 
-    // On a "video in a playlist" URL, download only the video.
-    // A URL for a playlist page still downloads the full playlist.
-    if (noPlaylist) {
-      args.push("--no-playlist");
-    }
+function processQueue() {
+  if (quitting) return;
+  let running = queue.filter((item) => item.status === "downloading").length;
+  let started = false;
+  for (const item of queue) {
+    if (running >= MAX_CONCURRENT) break;
+    if (item.status !== "pending") continue;
+    item.status = "downloading";
+    running++;
+    started = true;
+    runDownload(item);
+  }
+  if (started) queueChanged();
+}
 
-    if (playlistIndex !== undefined) {
-      args.push("--playlist-items", String(playlistIndex));
-    }
+// Keep a reference to each notification until it closes. If not, the click
+// handler can be lost.
+const liveNotifications = new Set();
 
-    // Add bundled bin dir to PATH so yt-dlp can find deno and ffmpeg
-    const env = { ...process.env };
-    env.PATH = getBundledBinPath() + ":" + (env.PATH || "");
+function notify(title, body, onClick) {
+  if (!app.isReady() || !Notification.isSupported()) return;
+  // The window already shows the result when it is in front.
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) return;
 
-    const proc = spawn(ytdlp, args, { env });
-    activeDownloads.set(id, proc);
+  const notification = new Notification({ title, body });
+  liveNotifications.add(notification);
+  notification.on("click", () => {
+    liveNotifications.delete(notification);
+    onClick();
+  });
+  notification.on("close", () => liveNotifications.delete(notification));
+  notification.show();
+}
 
-    let title = url;
-    let filePath = "";
-    let lastError = "";
-    const errorLines = [];
+function runDownload(item) {
+  const { id, url, format } = item;
+  const ffmpegDir = getFfmpegDir();
+  const outputTemplate = path.join(
+    appData.settings.downloadPath,
+    appData.settings.filenameTemplate
+  );
 
-    proc.stdout.on("data", (data) => {
-      const text = data.toString();
-      for (const line of text.split(/\r?\n/)) {
-        if (!line) continue;
+  const args = [
+    url,
+    "-o",
+    outputTemplate,
+    "--newline",
+    // --print makes yt-dlp quiet. --progress keeps the progress lines.
+    "--progress",
+    "--no-simulate",
+    "--print",
+    "after_move:filepath=%(filepath)s",
+    "--ffmpeg-location",
+    ffmpegDir,
+  ];
 
-        // Final post-processing path (set after merge/audio extraction)
-        const finalPath = line.match(/^filepath=(.+)$/);
-        if (finalPath) {
-          filePath = finalPath[1];
-          title = path.basename(filePath);
-          continue;
-        }
+  if (format === "mp3") {
+    args.push("-x", "--audio-format", "mp3", "--audio-quality", "0");
+  } else {
+    args.push("-f", videoFormatFor(appData.settings), "--merge-output-format", "mp4");
+  }
 
-        // Initial destination
-        const destMatch = line.match(/^\[download\] Destination: (.+)$/);
-        if (destMatch) {
-          if (!filePath) filePath = destMatch[1];
-          title = path.basename(destMatch[1]);
-        }
+  if (appData.settings.cookieBrowser) {
+    args.push("--cookies-from-browser", appData.settings.cookieBrowser);
+  }
 
-        // File already exists at output path
-        const alreadyMatch = line.match(/^\[download\] (.+) has already been downloaded$/);
-        if (alreadyMatch) {
-          filePath = alreadyMatch[1];
-          title = path.basename(filePath);
-        }
+  // On a "video in a playlist" URL, download only the video.
+  // A URL for a playlist page still downloads the full playlist.
+  if (item.noPlaylist) {
+    args.push("--no-playlist");
+  }
 
-        // Merger output (final muxed file)
-        const mergerMatch = line.match(/^\[Merger\] Merging formats into "(.+)"$/);
-        if (mergerMatch) {
-          filePath = mergerMatch[1];
-          title = path.basename(filePath);
-        }
+  // Add bundled bin dir to PATH so yt-dlp can find deno and ffmpeg
+  const env = { ...process.env };
+  env.PATH = getBundledBinPath() + ":" + (env.PATH || "");
 
-        // Progress — parse percent first, then size/speed/eta if present
-        const percentMatch = line.match(/^\[download\]\s+(\d+(?:\.\d+)?)%/);
-        if (percentMatch) {
-          const percent = parseFloat(percentMatch[1]);
-          const sizeMatch = line.match(/of\s+~?\s*(\S+)/);
-          const speedMatch = line.match(/at\s+(\S+(?:\s+\S+)?\/s|\S+\s+B\/s)/);
-          const etaMatch = line.match(/ETA\s+(\S+)/);
-          mainWindow.webContents.send(`download-progress-${id}`, {
-            percent,
-            size: sizeMatch ? sizeMatch[1] : "",
-            speed: speedMatch ? speedMatch[1].replace(/\s+/g, " ") : "",
-            eta: etaMatch ? etaMatch[1] : "",
-          });
-        }
+  const proc = spawn(getYtDlpPath(), args, { env });
+  activeProcs.set(id, proc);
+
+  let title = url;
+  let filePath = "";
+  let lastError = "";
+  const errorLines = [];
+
+  proc.stdout.on("data", (data) => {
+    const text = data.toString();
+    for (const line of text.split(/\r?\n/)) {
+      if (!line) continue;
+
+      // Final post-processing path (set after merge/audio extraction)
+      const finalPath = line.match(/^filepath=(.+)$/);
+      if (finalPath) {
+        filePath = finalPath[1];
+        title = path.basename(filePath);
+        continue;
       }
-    });
 
-    proc.stderr.on("data", (data) => {
-      const msg = data.toString();
-      console.error("yt-dlp stderr:", msg);
-      for (const line of msg.split(/\r?\n/)) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        errorLines.push(trimmed);
-        if (/^ERROR:/i.test(trimmed) || /^WARNING:/i.test(trimmed)) {
-          lastError = trimmed;
-        }
+      // Initial destination
+      const destMatch = line.match(/^\[download\] Destination: (.+)$/);
+      if (destMatch) {
+        if (!filePath) filePath = destMatch[1];
+        title = path.basename(destMatch[1]);
       }
-      mainWindow.webContents.send(`download-progress-${id}`, {
-        error: msg,
-      });
-    });
 
-    return new Promise((resolve) => {
-      proc.on("close", (code) => {
-        activeDownloads.delete(id);
+      // File already exists at output path
+      const alreadyMatch = line.match(/^\[download\] (.+) has already been downloaded$/);
+      if (alreadyMatch) {
+        filePath = alreadyMatch[1];
+        title = path.basename(filePath);
+      }
 
-        const fileExists = !!filePath && fs.existsSync(filePath);
-        let success = code === 0 && fileExists;
-        let error;
+      // Merger output (final muxed file)
+      const mergerMatch = line.match(/^\[Merger\] Merging formats into "(.+)"$/);
+      if (mergerMatch) {
+        filePath = mergerMatch[1];
+        title = path.basename(filePath);
+      }
 
-        if (!success) {
-          if (code !== 0) {
-            error = lastError || errorLines.slice(-3).join(" | ") || `yt-dlp exited with code ${code}`;
-          } else if (!filePath) {
-            error = "yt-dlp reported success but produced no output file. " +
-              (errorLines.length ? `Messages: ${errorLines.slice(-3).join(" | ")}` : "Check yt-dlp logs.");
-          } else {
-            error = `Expected file not found: ${filePath}`;
-          }
-        }
-
-        const historyEntry = {
+      // Progress — parse percent first, then size/speed/eta if present
+      const percentMatch = line.match(/^\[download\]\s+(\d+(?:\.\d+)?)%/);
+      if (percentMatch) {
+        const sizeMatch = line.match(/of\s+~?\s*(\S+)/);
+        const speedMatch = line.match(/at\s+(\S+(?:\s+\S+)?\/s|\S+\s+B\/s)/);
+        const etaMatch = line.match(/ETA\s+(\S+)/);
+        item.percent = parseFloat(percentMatch[1]);
+        item.size = sizeMatch ? sizeMatch[1] : "";
+        item.speed = speedMatch ? speedMatch[1].replace(/\s+/g, " ") : "";
+        item.eta = etaMatch ? etaMatch[1] : "";
+        sendToWindow("download-progress", {
           id,
-          url,
-          title,
-          filePath: fileExists ? filePath : "",
-          format,
-          date: new Date().toISOString(),
-          success,
-          error,
-        };
+          percent: item.percent,
+          size: item.size,
+          speed: item.speed,
+          eta: item.eta,
+        });
+      }
+    }
+  });
 
-        appData.history.unshift(historyEntry);
-        if (appData.history.length > 100) appData.history.pop();
-        saveData(appData);
+  proc.stderr.on("data", (data) => {
+    const msg = data.toString();
+    console.error("yt-dlp stderr:", msg);
+    for (const line of msg.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      errorLines.push(trimmed);
+      if (/^ERROR:/i.test(trimmed) || /^WARNING:/i.test(trimmed)) {
+        lastError = trimmed;
+      }
+    }
+  });
 
-        resolve({ success, title, filePath: historyEntry.filePath, error });
-      });
+  let finished = false;
+  const finish = (code, spawnError) => {
+    if (finished) return;
+    finished = true;
+    activeProcs.delete(id);
+
+    // The app stopped this download because it quits. Keep the item in the
+    // saved queue.
+    if (quitting) return;
+
+    queue = queue.filter((q) => q !== item);
+
+    const fileExists = !!filePath && fs.existsSync(filePath);
+    const success = code === 0 && fileExists;
+    let error;
+
+    if (!success) {
+      if (item.cancelled) {
+        error = "Cancelled";
+      } else if (spawnError) {
+        error = `Could not start yt-dlp: ${spawnError.message}`;
+      } else if (code !== 0) {
+        error = lastError || errorLines.slice(-3).join(" | ") || `yt-dlp exited with code ${code}`;
+      } else if (!filePath) {
+        error = "yt-dlp reported success but produced no output file. " +
+          (errorLines.length ? `Messages: ${errorLines.slice(-3).join(" | ")}` : "Check yt-dlp logs.");
+      } else {
+        error = `Expected file not found: ${filePath}`;
+      }
+    }
+
+    const savedPath = fileExists ? filePath : "";
+    appData.history.unshift({
+      id,
+      url,
+      title,
+      filePath: savedPath,
+      format,
+      date: new Date().toISOString(),
+      success,
+      error,
     });
-  }
-);
+    if (appData.history.length > 100) appData.history.pop();
+    queueChanged(); // also saves the history
 
-ipcMain.handle("cancel-download", (_, id) => {
-  const proc = activeDownloads.get(id);
-  if (proc) {
-    proc.kill("SIGTERM");
-    activeDownloads.delete(id);
-    return { success: true };
-  }
-  return { success: false };
+    if (success) {
+      notify("Download complete", title, () => shell.showItemInFolder(savedPath));
+    } else if (!item.cancelled) {
+      notify("Download failed", `${title}\n${error}`, showWindow);
+    }
+
+    processQueue();
+  };
+
+  proc.on("error", (e) => finish(null, e));
+  proc.on("close", (code) => finish(code));
+}
+
+ipcMain.handle("queue-get", () => publicQueue());
+
+ipcMain.handle("queue-add", (_, { url, format }) => {
+  const trimmed = String(url || "").trim();
+  // Text that starts with "-" would be read by yt-dlp as an option.
+  if (!trimmed || trimmed.startsWith("-")) return { success: false };
+  addToQueue({ url: trimmed, format });
+  return { success: true };
 });
 
-ipcMain.handle("get-active-downloads", () => {
-  return Array.from(activeDownloads.keys());
+ipcMain.handle("queue-remove", (_, id) => {
+  queue = queue.filter((item) => !(item.id === id && item.status === "pending"));
+  queueChanged();
+  return { success: true };
+});
+
+ipcMain.handle("queue-clear", () => {
+  queue = queue.filter((item) => item.status !== "pending");
+  queueChanged();
+  return { success: true };
+});
+
+ipcMain.handle("cancel-download", (_, id) => {
+  const item = queue.find((q) => q.id === id);
+  const proc = activeProcs.get(id);
+  if (!item || !proc) return { success: false };
+  item.cancelled = true;
+  proc.kill("SIGTERM");
+  return { success: true };
 });

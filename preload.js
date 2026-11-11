@@ -20,18 +20,16 @@ contextBridge.exposeInMainWorld("ytdlp", {
   openDownloadFolder: () => ipcRenderer.invoke("open-download-folder"),
   openFile: (filePath) => ipcRenderer.invoke("open-file", filePath),
 
-  startDownload: (options) => ipcRenderer.invoke("start-download", options),
+  getQueue: () => ipcRenderer.invoke("queue-get"),
+  addToQueue: (item) => ipcRenderer.invoke("queue-add", item),
+  removeFromQueue: (id) => ipcRenderer.invoke("queue-remove", id),
+  clearQueue: () => ipcRenderer.invoke("queue-clear"),
   cancelDownload: (id) => ipcRenderer.invoke("cancel-download", id),
-  getActiveDownloads: () => ipcRenderer.invoke("get-active-downloads"),
 
-  onExternalDownload: (callback) => {
-    ipcRenderer.on("external-download", (_, data) => callback(data));
+  onQueueChanged: (callback) => {
+    ipcRenderer.on("queue-changed", (_, data) => callback(data));
   },
-
-  onDownloadProgress: (id, callback) => {
-    const channel = `download-progress-${id}`;
-    const listener = (_, data) => callback(data);
-    ipcRenderer.on(channel, listener);
-    return () => ipcRenderer.removeListener(channel, listener);
+  onDownloadProgress: (callback) => {
+    ipcRenderer.on("download-progress", (_, data) => callback(data));
   },
 });

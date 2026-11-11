@@ -1,6 +1,5 @@
-// State
+// State. The main process owns the queue. This is a copy for display.
 let queue = [];
-let activeDownloads = new Map();
 
 // DOM Elements
 const tabs = document.querySelectorAll(".tab");
@@ -34,7 +33,8 @@ async function init() {
   await loadSettings();
   await updateDiskSpace();
   await loadHistory();
-  processQueue();
+  queue = await window.ytdlp.getQueue();
+  renderAll();
 }
 
 async function checkVersion() {
@@ -78,7 +78,7 @@ async function updateDiskSpace() {
 }
 
 // Queue management
-addToQueueBtn.addEventListener("click", () => {
+addToQueueBtn.addEventListener("click", async () => {
   const url = urlInput.value.trim();
   if (!url) return;
 
@@ -86,31 +86,51 @@ addToQueueBtn.addEventListener("click", () => {
     'input[name="format"]:checked'
   ).value;
 
-  queue.push({
-    id: Date.now().toString(),
-    url,
-    format,
-    status: "pending",
-  });
-
-  urlInput.value = "";
-  renderQueue();
-  processQueue();
+  const result = await window.ytdlp.addToQueue({ url, format });
+  if (result.success) urlInput.value = "";
 });
 
-// URLs sent by the browser extension
-let externalCount = 0;
-window.ytdlp.onExternalDownload(({ url, format }) => {
-  queue.push({
-    id: `${Date.now()}-ext${externalCount++}`,
-    url,
-    format,
-    noPlaylist: true,
-    status: "pending",
-  });
-  renderQueue();
-  processQueue();
+// The main process sends the full queue when an item is added, starts,
+// completes or is removed.
+window.ytdlp.onQueueChanged((items) => {
+  queue = items;
+  renderAll();
+  loadHistory();
+  updateDiskSpace();
 });
+
+// Progress changes only one item. Update that item and do not build the
+// lists again.
+window.ytdlp.onDownloadProgress((progress) => {
+  const item = queue.find((q) => q.id === progress.id);
+  if (!item) return;
+  Object.assign(item, progress);
+
+  const el = activeDownloadsEl.querySelector(
+    `.download-item[data-id="${CSS.escape(item.id)}"]`
+  );
+  if (!el) return;
+  el.querySelector(".progress-fill").style.width = `${item.percent}%`;
+  el.querySelector(".progress-amount").textContent = amountText(item);
+  el.querySelector(".progress-rate").textContent = rateText(item);
+});
+
+function renderAll() {
+  renderQueue();
+  renderActiveDownloads();
+}
+
+function formatLabel(format) {
+  return format === "mp3" ? "🎵 MP3" : "🎬 Video";
+}
+
+function amountText(d) {
+  return `${d.percent.toFixed(1)}% of ${d.size || "..."}`;
+}
+
+function rateText(d) {
+  return `${d.speed || "..."} • ETA ${d.eta || "..."}`;
+}
 
 function renderQueue() {
   if (queue.length === 0) {
@@ -121,127 +141,66 @@ function renderQueue() {
   queueListEl.innerHTML = queue
     .map(
       (item) => `
-    <div class="queue-item" data-id="${item.id}">
+    <div class="queue-item" data-id="${escapeHtml(item.id)}">
       <div class="queue-item-header">
         <span class="queue-item-title">${escapeHtml(item.url)}</span>
-        <span class="queue-item-format">${item.format === "mp3" ? "🎵 MP3" : "🎬 Video"}</span>
+        <span class="queue-item-format">${formatLabel(item.format)}</span>
       </div>
       <div class="queue-item-actions">
         <span class="hint">${item.status}</span>
-        ${item.status === "pending" ? `<button class="btn small danger remove-queue" data-id="${item.id}">Remove</button>` : ""}
+        ${item.status === "pending" ? `<button class="btn small danger remove-queue" data-id="${escapeHtml(item.id)}">Remove</button>` : ""}
       </div>
     </div>
   `
     )
     .join("");
-
-  document.querySelectorAll(".remove-queue").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      queue = queue.filter((item) => item.id !== btn.dataset.id);
-      renderQueue();
-    });
-  });
 }
 
-document.getElementById("clear-queue").addEventListener("click", () => {
-  queue = queue.filter((item) => item.status !== "pending");
-  renderQueue();
+queueListEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".remove-queue");
+  if (btn) window.ytdlp.removeFromQueue(btn.dataset.id);
 });
 
-// Process queue with concurrency
-const MAX_CONCURRENT = 3;
-
-async function processQueue() {
-  const pending = queue.filter((item) => item.status === "pending");
-  const downloading = queue.filter((item) => item.status === "downloading");
-
-  const available = MAX_CONCURRENT - downloading.length;
-
-  for (let i = 0; i < Math.min(available, pending.length); i++) {
-    const item = pending[i];
-    item.status = "downloading";
-    renderQueue();
-    startDownload(item);
-  }
-}
-
-async function startDownload(item) {
-  activeDownloads.set(item.id, {
-    ...item,
-    percent: 0,
-    speed: "",
-    eta: "",
-    size: "",
-  });
-  renderActiveDownloads();
-
-  const unsubscribe = window.ytdlp.onDownloadProgress(item.id, (progress) => {
-    const download = activeDownloads.get(item.id);
-    if (download) {
-      Object.assign(download, progress);
-      renderActiveDownloads();
-    }
-  });
-
-  try {
-    const result = await window.ytdlp.startDownload({
-      id: item.id,
-      url: item.url,
-      format: item.format,
-      noPlaylist: item.noPlaylist,
-    });
-
-    item.status = result.success ? "completed" : "failed";
-  } catch (error) {
-    item.status = "failed";
-  }
-
-  unsubscribe();
-  activeDownloads.delete(item.id);
-  queue = queue.filter((q) => q.id !== item.id);
-
-  renderActiveDownloads();
-  renderQueue();
-  processQueue();
-  updateDiskSpace();
-}
+document.getElementById("clear-queue").addEventListener("click", () => {
+  window.ytdlp.clearQueue();
+});
 
 function renderActiveDownloads() {
-  if (activeDownloads.size === 0) {
+  const active = queue.filter((item) => item.status === "downloading");
+  if (active.length === 0) {
     activeDownloadsEl.innerHTML =
       '<p class="empty-state">No active downloads</p>';
     return;
   }
 
-  activeDownloadsEl.innerHTML = Array.from(activeDownloads.values())
+  activeDownloadsEl.innerHTML = active
     .map(
       (d) => `
-    <div class="download-item" data-id="${d.id}">
+    <div class="download-item" data-id="${escapeHtml(d.id)}">
       <div class="download-item-header">
         <span class="download-item-title">${escapeHtml(d.url)}</span>
-        <span class="download-item-format">${d.format === "mp3" ? "🎵 MP3" : "🎬 Video"}</span>
+        <span class="download-item-format">${formatLabel(d.format)}</span>
       </div>
       <div class="progress-container">
         <div class="progress-bar">
           <div class="progress-fill" style="width: ${d.percent}%"></div>
         </div>
         <div class="progress-info">
-          <span>${d.percent.toFixed(1)}% of ${d.size || "..."}</span>
-          <span>${d.speed || "..."} • ETA ${d.eta || "..."}</span>
+          <span class="progress-amount">${escapeHtml(amountText(d))}</span>
+          <span class="progress-rate">${escapeHtml(rateText(d))}</span>
         </div>
       </div>
-      <button class="btn small danger cancel-download" data-id="${d.id}" style="margin-top: 10px">Cancel</button>
+      <button class="btn small danger cancel-download" data-id="${escapeHtml(d.id)}" style="margin-top: 10px">Cancel</button>
     </div>
   `
     )
     .join("");
-
-  document.querySelectorAll(".cancel-download").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      await window.ytdlp.cancelDownload(btn.dataset.id);
-    });
-  });
 }
+
+activeDownloadsEl.addEventListener("click", (e) => {
+  const btn = e.target.closest(".cancel-download");
+  if (btn) window.ytdlp.cancelDownload(btn.dataset.id);
+});
 
 // History
 async function loadHistory() {
