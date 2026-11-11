@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("ytdlp", {
 
   updateDependencies: () => ipcRenderer.invoke("update-dependencies"),
   getDiskSpace: () => ipcRenderer.invoke("get-disk-space"),
+  getSessionStart: () => ipcRenderer.invoke("get-session-start"),
   getHistory: () => ipcRenderer.invoke("get-history"),
   clearHistory: () => ipcRenderer.invoke("clear-history"),
   openDownloadFolder: () => ipcRenderer.invoke("open-download-folder"),

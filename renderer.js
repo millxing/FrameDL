@@ -10,6 +10,7 @@ const addToQueueBtn = document.getElementById("add-to-queue");
 const activeDownloadsEl = document.getElementById("active-downloads");
 const queueListEl = document.getElementById("queue-list");
 const historyListEl = document.getElementById("history-list");
+const recentListEl = document.getElementById("recent-list");
 const diskSpaceEl = document.getElementById("disk-space");
 const downloadPathEl = document.getElementById("download-path");
 const filenameTemplateEl = document.getElementById("filename-template");
@@ -203,17 +204,8 @@ activeDownloadsEl.addEventListener("click", (e) => {
 });
 
 // History
-async function loadHistory() {
-  const history = await window.ytdlp.getHistory();
-
-  if (history.length === 0) {
-    historyListEl.innerHTML = '<p class="empty-state">No downloads yet</p>';
-    return;
-  }
-
-  historyListEl.innerHTML = history
-    .map(
-      (item) => `
+function historyItemHtml(item) {
+  return `
     <div class="history-item ${item.success ? "success" : "failed"}" data-path="${escapeHtml(item.filePath || "")}">
       <div class="history-item-header">
         <span class="history-item-title">${escapeHtml(item.title || item.url)}</span>
@@ -222,18 +214,41 @@ async function loadHistory() {
       <div class="hint">${item.success ? "✓ Downloaded" : "✗ Failed"} • ${item.format === "mp3" ? "MP3" : "Video"}</div>
       ${item.error ? `<div class="hint" style="color: #ff6b6b; margin-top: 4px; font-size: 0.8em; word-break: break-all;">${escapeHtml(item.error)}</div>` : ""}
     </div>
-  `
-    )
-    .join("");
-
-  document.querySelectorAll(".history-item.success").forEach((el) => {
-    el.style.cursor = "pointer";
-    el.addEventListener("click", () => {
-      const filePath = el.dataset.path;
-      if (filePath) window.ytdlp.openFile(filePath);
-    });
-  });
+  `;
 }
+
+// Results on the Download tab: items completed after this time.
+// It starts as the time the app started. "Clear" moves it to now.
+let recentSince = null;
+
+async function loadHistory() {
+  const history = await window.ytdlp.getHistory();
+
+  historyListEl.innerHTML =
+    history.length === 0
+      ? '<p class="empty-state">No downloads yet</p>'
+      : history.map(historyItemHtml).join("");
+
+  if (!recentSince) recentSince = await window.ytdlp.getSessionStart();
+  const recent = history.filter((item) => item.date > recentSince).slice(0, 10);
+  recentListEl.innerHTML =
+    recent.length === 0
+      ? '<p class="empty-state">No downloads completed since the app started</p>'
+      : recent.map(historyItemHtml).join("");
+}
+
+// Click a successful item to open the file
+function openHistoryItem(e) {
+  const el = e.target.closest(".history-item.success");
+  if (el && el.dataset.path) window.ytdlp.openFile(el.dataset.path);
+}
+historyListEl.addEventListener("click", openHistoryItem);
+recentListEl.addEventListener("click", openHistoryItem);
+
+document.getElementById("clear-recent").addEventListener("click", () => {
+  recentSince = new Date().toISOString();
+  loadHistory();
+});
 
 document.getElementById("clear-history").addEventListener("click", async () => {
   await window.ytdlp.clearHistory();

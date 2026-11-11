@@ -413,6 +413,10 @@ ipcMain.handle("get-disk-space", async () => {
   }
 });
 
+// The Download tab shows the results since the app started.
+const SESSION_START = new Date().toISOString();
+ipcMain.handle("get-session-start", () => SESSION_START);
+
 ipcMain.handle("get-history", () => {
   return appData.history;
 });

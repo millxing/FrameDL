@@ -339,6 +339,7 @@ input[type="text"]:focus {
 }
 
 .history-item.success {
+  cursor: pointer;
   border-left: 3px solid var(--success);
 }
 
