@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "FrameDL",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Send the video on the current page to the FrameDL app.",
   "action": {
     "default_title": "Download with FrameDL",
@@ -19,6 +19,16 @@
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["activeTab", "contextMenus"],
-  "host_permissions": ["http://127.0.0.1:47631/*"]
+  "permissions": [
+    "activeTab",
+    "contextMenus",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:47631/*",
+    "http://127.0.0.1:47632/*",
+    "http://127.0.0.1:47633/*",
+    "http://127.0.0.1:47634/*",
+    "http://127.0.0.1:47635/*"
+  ]
 }

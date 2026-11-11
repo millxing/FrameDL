@@ -30,7 +30,10 @@ let mainWindow;
 // The extension sends page URLs to a local HTTP server when the app is running.
 // When the app is not running, the extension opens a framedl:// link, which
 // starts the app and delivers the URL through the "open-url" event.
-const BRIDGE_PORT = 47631;
+// "localhost" is common to all user accounts on the Mac. Thus each account
+// that runs FrameDL takes the first free port in this list, and an extension
+// must show a token that this account's app knows (see trustToken).
+const BRIDGE_PORTS = [47631, 47632, 47633, 47634, 47635];
 const URL_SCHEME = "framedl";
 
 // Binary resolution
@@ -219,12 +222,36 @@ function queueExternal(rawUrl, rawFormat) {
   return null;
 }
 
-// framedl://download?url=<encoded page URL>&format=video|mp3
+// Each browser extension makes a random token. macOS delivers a framedl://
+// link only to the app of the account that clicked it, so a token that comes
+// in a link is from an extension in this account. Local server requests are
+// accepted only with a known token. Without this, an extension in a second
+// account would send its downloads to the app of the first account.
+const TOKEN_PATTERN = /^[A-Za-z0-9_-]{20,64}$/;
+const MAX_TOKENS = 20;
+
+function isTrustedToken(token) {
+  return (
+    typeof token === "string" &&
+    Array.isArray(appData.bridgeTokens) &&
+    appData.bridgeTokens.includes(token)
+  );
+}
+
+function trustToken(token) {
+  if (typeof token !== "string" || !TOKEN_PATTERN.test(token)) return;
+  if (isTrustedToken(token)) return;
+  appData.bridgeTokens = [token, ...(appData.bridgeTokens || [])].slice(0, MAX_TOKENS);
+  saveData(appData);
+}
+
+// framedl://download?url=<encoded page URL>&format=video|mp3&token=<token>
 app.on("open-url", (event, link) => {
   event.preventDefault();
   try {
     const parsed = new URL(link);
     if (parsed.protocol !== `${URL_SCHEME}:`) return;
+    trustToken(parsed.searchParams.get("token"));
     const error = queueExternal(
       parsed.searchParams.get("url"),
       parsed.searchParams.get("format")
@@ -249,10 +276,6 @@ function startBridgeServer() {
       return reply(403, { ok: false, error: "Forbidden" });
     }
 
-    if (req.method === "GET" && req.url === "/ping") {
-      return reply(200, { ok: true, app: "FrameDL", version: app.getVersion() });
-    }
-
     if (req.method === "POST" && req.url === "/download") {
       let body = "";
       req.on("data", (chunk) => {
@@ -266,6 +289,10 @@ function startBridgeServer() {
         } catch {
           return reply(400, { ok: false, error: "Invalid JSON" });
         }
+        if (!isTrustedToken(payload.token)) {
+          // The extension then tries the next port, or uses a framedl:// link.
+          return reply(403, { ok: false, error: "Unknown token" });
+        }
         const error = queueExternal(payload.url, payload.format);
         if (error) return reply(400, { ok: false, error });
         reply(200, { ok: true });
@@ -276,11 +303,18 @@ function startBridgeServer() {
     reply(404, { ok: false, error: "Not found" });
   });
 
+  // Take the first free port. Another account can have the ports before it.
+  let portIndex = 0;
   server.on("error", (e) => {
+    if (e.code === "EADDRINUSE" && portIndex < BRIDGE_PORTS.length - 1) {
+      portIndex++;
+      server.listen(BRIDGE_PORTS[portIndex], "127.0.0.1");
+      return;
+    }
     // The framedl:// link still works without the server.
     console.error("Bridge server error:", e.message);
   });
-  server.listen(BRIDGE_PORT, "127.0.0.1");
+  server.listen(BRIDGE_PORTS[portIndex], "127.0.0.1");
 }
 
 app.whenReady().then(() => {
