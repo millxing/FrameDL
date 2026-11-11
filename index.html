@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FrameDL</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+  <div class="container">
+    <header>
+      <h1>FrameDL</h1>
+      <div id="version-badge" class="badge">Checking...</div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="download">Download</button>
+      <button class="tab" data-tab="queue">Queue</button>
+      <button class="tab" data-tab="history">History</button>
+      <button class="tab" data-tab="settings">Settings</button>
+    </nav>
+
+    <!-- Download Tab -->
+    <section id="download" class="tab-content active">
+      <div class="card">
+        <h2>New Download</h2>
+        <div class="form-group">
+          <label for="url-input">URL (video or playlist)</label>
+          <input type="text" id="url-input" placeholder="https://youtube.com/watch?v=..." />
+        </div>
+        <div class="form-group">
+          <label>Format</label>
+          <div class="radio-group">
+            <label class="radio-label">
+              <input type="radio" name="format" value="video" checked />
+              <span>🎬 Video (best quality)</span>
+            </label>
+            <label class="radio-label">
+              <input type="radio" name="format" value="mp3" />
+              <span>🎵 MP3 (audio only)</span>
+            </label>
+          </div>
+        </div>
+        <button id="add-to-queue" class="btn primary">Add to Queue</button>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>Active Downloads</h2>
+          <span id="disk-space" class="disk-space"></span>
+        </div>
+        <div id="active-downloads" class="downloads-list">
+          <p class="empty-state">No active downloads</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Queue Tab -->
+    <section id="queue" class="tab-content">
+      <div class="card">
+        <div class="card-header">
+          <h2>Download Queue</h2>
+          <button id="clear-queue" class="btn small">Clear Queue</button>
+        </div>
+        <div id="queue-list" class="queue-list">
+          <p class="empty-state">Queue is empty</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- History Tab -->
+    <section id="history" class="tab-content">
+      <div class="card">
+        <div class="card-header">
+          <h2>Download History</h2>
+          <div>
+            <button id="open-folder" class="btn small">Open Folder</button>
+            <button id="clear-history" class="btn small danger">
+              Clear History
+            </button>
+          </div>
+        </div>
+        <div id="history-list" class="history-list">
+          <p class="empty-state">No downloads yet</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings Tab -->
+    <section id="settings" class="tab-content">
+      <div class="card">
+        <h2>yt-dlp</h2>
+        <p class="hint">A working copy is included with the app. Use these buttons to download the latest version from GitHub.</p>
+        <div class="button-row">
+          <button id="fresh-install" class="btn">Download Latest</button>
+          <button id="update-ytdlp" class="btn">Update yt-dlp</button>
+        </div>
+        <p id="install-status" class="status-message"></p>
+      </div>
+
+      <div class="card">
+        <h2>Cookie Browser</h2>
+        <p class="hint">
+          Select the browser yt-dlp should use for cookies (for
+          age-restricted or private videos)
+        </p>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input type="radio" name="cookie-browser" value="" />
+            <span>None</span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="cookie-browser" value="brave" />
+            <span>Brave</span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="cookie-browser" value="chrome" />
+            <span>Chrome</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Video Codec</h2>
+        <p class="hint">
+          H.264 files play instantly in FrameLoop and QuickTime. The best
+          YouTube format is often AV1 or VP9 with Opus audio, which FrameLoop
+          has to convert before playing. YouTube's H.264 tops out at 1080p.
+        </p>
+        <div class="radio-group">
+          <label class="radio-label">
+            <input type="radio" name="video-codec" value="h264" />
+            <span>Always H.264</span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="video-codec" value="h264-1080" />
+            <span>H.264 for 1080p or lower (keep best format for higher resolutions)</span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="video-codec" value="best" />
+            <span>Best available format (may be AV1/VP9)</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Download Location</h2>
+        <div class="path-selector">
+          <span id="download-path" class="path-display">~/Downloads/yt-dlp</span>
+          <button id="change-path" class="btn small">Change</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Filename Template</h2>
+        <p class="hint">
+          Available variables: %(title)s, %(uploader)s, %(upload_date)s,
+          %(id)s, %(ext)s
+        </p>
+        <div class="form-group">
+          <input type="text" id="filename-template" placeholder="%(title)s.%(ext)s" />
+          <button id="save-template" class="btn small">Save</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+
+</html>

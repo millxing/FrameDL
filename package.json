@@ -1,0 +1,45 @@
+{
+  "name": "framedl",
+  "version": "1.1.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "prebuild": "bash scripts/fetch-binaries.sh",
+    "build": "electron-builder --mac"
+  },
+  "build": {
+    "appId": "com.rob.framedl",
+    "productName": "FrameDL",
+    "protocols": [
+      {
+        "name": "FrameDL",
+        "schemes": ["framedl"]
+      }
+    ],
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.utilities",
+      "icon": "build/icon.icns"
+    },
+    "extraResources": [
+      {
+        "from": "bin/",
+        "to": "bin",
+        "filter": ["**/*"]
+      }
+    ],
+    "files": [
+      "**/*",
+      "!bin/**",
+      "!build/**",
+      "!dist/**",
+      "!backup-app/**",
+      "!extension/**",
+      "!scripts/**"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}

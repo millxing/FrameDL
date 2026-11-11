@@ -1,0 +1,364 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-primary: #1a1a2e;
+  --bg-secondary: #16213e;
+  --bg-card: #0f3460;
+  --accent: #e94560;
+  --accent-hover: #ff6b6b;
+  --text-primary: #eaeaea;
+  --text-secondary: #a0a0a0;
+  --success: #4ecca3;
+  --danger: #ff6b6b;
+  --border-radius: 8px;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica,
+    Arial, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--bg-card);
+}
+
+header h1 {
+  font-size: 1.8rem;
+}
+
+.badge {
+  background: var(--bg-card);
+  padding: 6px 12px;
+  border-radius: 20px;
+  font-size: 0.85rem;
+}
+
+.badge.installed {
+  background: var(--success);
+  color: #000;
+}
+
+.badge.not-installed {
+  background: var(--danger);
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.tab {
+  background: var(--bg-secondary);
+  border: none;
+  color: var(--text-secondary);
+  padding: 10px 20px;
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: all 0.2s;
+}
+
+.tab:hover {
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.tab.active {
+  background: var(--accent);
+  color: white;
+}
+
+/* Tab Content */
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+/* Cards */
+.card {
+  background: var(--bg-secondary);
+  border-radius: var(--border-radius);
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.card h2 {
+  font-size: 1.2rem;
+  margin-bottom: 15px;
+  color: var(--text-primary);
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.card-header h2 {
+  margin-bottom: 0;
+}
+
+/* Forms */
+.form-group {
+  margin-bottom: 15px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+input[type="text"] {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid var(--bg-card);
+  border-radius: var(--border-radius);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+input[type="text"]:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.radio-group {
+  display: flex;
+  gap: 15px;
+  flex-wrap: wrap;
+}
+
+.radio-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 10px 15px;
+  background: var(--bg-primary);
+  border-radius: var(--border-radius);
+  transition: all 0.2s;
+}
+
+.radio-label:hover {
+  background: var(--bg-card);
+}
+
+.radio-label input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+/* Buttons */
+.btn {
+  background: var(--bg-card);
+  border: none;
+  color: var(--text-primary);
+  padding: 12px 24px;
+  border-radius: var(--border-radius);
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: all 0.2s;
+}
+
+.btn:hover {
+  background: var(--accent);
+}
+
+.btn.primary {
+  background: var(--accent);
+}
+
+.btn.primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn.small {
+  padding: 8px 16px;
+  font-size: 0.85rem;
+}
+
+.btn.danger:hover {
+  background: var(--danger);
+}
+
+.button-row {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+/* Path Selector */
+.path-selector {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.path-display {
+  flex: 1;
+  padding: 10px;
+  background: var(--bg-primary);
+  border-radius: var(--border-radius);
+  font-family: monospace;
+  font-size: 0.9rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status & Hints */
+.status-message {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: var(--border-radius);
+  font-size: 0.9rem;
+}
+
+.status-message.success {
+  background: rgba(78, 204, 163, 0.2);
+  color: var(--success);
+}
+
+.status-message.error {
+  background: rgba(255, 107, 107, 0.2);
+  color: var(--danger);
+}
+
+.hint {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin-bottom: 10px;
+}
+
+/* Empty State */
+.empty-state {
+  text-align: center;
+  color: var(--text-secondary);
+  padding: 30px;
+}
+
+/* Downloads List */
+.downloads-list,
+.queue-list,
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.download-item,
+.queue-item,
+.history-item {
+  background: var(--bg-primary);
+  border-radius: var(--border-radius);
+  padding: 15px;
+}
+
+.download-item-header,
+.queue-item-header,
+.history-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.download-item-title,
+.queue-item-title,
+.history-item-title {
+  font-weight: 500;
+  word-break: break-all;
+  flex: 1;
+  margin-right: 10px;
+}
+
+.download-item-format,
+.queue-item-format {
+  font-size: 0.8rem;
+  padding: 4px 8px;
+  background: var(--bg-card);
+  border-radius: 4px;
+}
+
+/* Progress Bar */
+.progress-container {
+  margin-top: 10px;
+}
+
+.progress-bar {
+  height: 8px;
+  background: var(--bg-card);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+/* History Item */
+.history-item-date {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+.history-item.success {
+  border-left: 3px solid var(--success);
+}
+
+.history-item.failed {
+  border-left: 3px solid var(--danger);
+}
+
+/* Disk Space */
+.disk-space {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+/* Queue item buttons */
+.queue-item-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn.icon {
+  padding: 6px 10px;
+  font-size: 0.8rem;
+}
