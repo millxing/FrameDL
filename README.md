@@ -58,7 +58,7 @@ The transcript comes from the captions of the video. FrameDL does not download t
 - The text file has the same name as the video file would have, with the `.txt` extension. The first lines give the title, the address and the caption language.
 - A transcript is for one video. A playlist address gives an error.
 
-If a video has no captions, the result is "This video has no captions."
+If a video has no captions, the result is "This video has no captions." For these videos, download the audio (MP3) and open it in a speech-to-text app, for example MacWhisper.
 
 ## How the extension talks to the app
 
