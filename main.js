@@ -181,6 +181,14 @@ function videoFormatFor(settings) {
   return VIDEO_FORMATS[settings.videoCodec] || VIDEO_FORMATS.best;
 }
 
+// Download formats: "video" (MP4), "mp3" (audio only) and "transcript"
+// (captions as a text file, no media download).
+const FORMATS = ["video", "mp3", "transcript"];
+
+function normalizeFormat(format) {
+  return FORMATS.includes(format) ? format : "video";
+}
+
 function saveData(data) {
   fs.writeFileSync(DATA_PATH, JSON.stringify(data, null, 2));
 }
@@ -590,7 +598,7 @@ let queue = (Array.isArray(appData.queue) ? appData.queue : [])
   .map((item) => ({
     id: String(item.id),
     url: item.url,
-    format: item.format === "mp3" ? "mp3" : "video",
+    format: normalizeFormat(item.format),
     noPlaylist: !!item.noPlaylist,
     title: cleanTitle(item.title),
     status: "pending",
@@ -627,8 +635,9 @@ function addToQueue({ url, format, noPlaylist, title }) {
   queue.push({
     id: `${Date.now()}-${idCounter++}`,
     url,
-    format: format === "mp3" ? "mp3" : "video",
-    noPlaylist: !!noPlaylist,
+    format: normalizeFormat(format),
+    // A transcript is always for one video.
+    noPlaylist: !!noPlaylist || format === "transcript",
     title: cleanTitle(title),
     status: "pending",
   });
@@ -671,6 +680,10 @@ function notify(title, body, onClick) {
 }
 
 function runDownload(item) {
+  if (item.format === "transcript") {
+    runTranscript(item);
+    return;
+  }
   const { id, url, format } = item;
   const ffmpegDir = getFfmpegDir();
   const outputTemplate = path.join(
@@ -829,31 +842,341 @@ function runDownload(item) {
       }
     }
 
-    const savedPath = fileExists ? filePath : "";
-    appData.history.unshift({
-      id,
-      url,
-      title,
-      filePath: savedPath,
-      format,
-      date: new Date().toISOString(),
+    completeItem(item, {
       success,
+      filePath: fileExists ? filePath : "",
+      title,
       error,
     });
-    if (appData.history.length > 100) appData.history.pop();
-    queueChanged(); // also saves the history
-
-    if (success) {
-      notify("Download complete", title, () => shell.showItemInFolder(savedPath));
-    } else if (!item.cancelled) {
-      notify("Download failed", `${title}\n${error}`, showWindow);
-    }
-
-    processQueue();
   };
 
   proc.on("error", (e) => finish(null, e));
   proc.on("close", (code) => finish(code));
+}
+
+// Record the result of a queue item that stopped, tell the user and start
+// the next item.
+function completeItem(item, { success, filePath, title, error }) {
+  appData.history.unshift({
+    id: item.id,
+    url: item.url,
+    title,
+    filePath,
+    format: item.format,
+    date: new Date().toISOString(),
+    success,
+    error,
+  });
+  if (appData.history.length > 100) appData.history.pop();
+  queueChanged(); // also saves the history
+
+  const done = item.format === "transcript" ? "Transcript" : "Download";
+  if (success) {
+    notify(`${done} complete`, title, () => shell.showItemInFolder(filePath));
+  } else if (!item.cancelled) {
+    notify(`${done} failed`, `${title}\n${error}`, showWindow);
+  }
+
+  processQueue();
+}
+
+// Transcripts.
+// Step 1: yt-dlp writes the video information (title, language and the list
+// of caption tracks) to a JSON file. Step 2: yt-dlp reads that file again
+// (no second request to the site) and downloads only the selected track.
+// The app then converts the track to a text file with time stamps.
+// This uses captions that the site has. It does not do speech recognition.
+
+// Start a yt-dlp process for a queue item. Resolves with the exit code, the
+// output and the last error line.
+function runYtDlp(item, args) {
+  return new Promise((resolve) => {
+    const env = { ...process.env };
+    env.PATH = getBundledBinPath() + ":" + (env.PATH || "");
+    let proc;
+    try {
+      proc = spawn(getYtDlpPath(), args, { env });
+    } catch (e) {
+      resolve({ code: null, stdout: "", error: `Could not start yt-dlp: ${e.message}` });
+      return;
+    }
+    activeProcs.set(item.id, proc);
+
+    const out = [];
+    const errorLines = [];
+    let lastError = "";
+    proc.stdout.on("data", (data) => out.push(data));
+    proc.stderr.on("data", (data) => {
+      for (const line of data.toString().split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        errorLines.push(trimmed);
+        if (errorLines.length > 20) errorLines.shift();
+        if (/^ERROR:/i.test(trimmed)) lastError = trimmed;
+      }
+    });
+
+    let finished = false;
+    const finish = (code, spawnError) => {
+      if (finished) return;
+      finished = true;
+      activeProcs.delete(item.id);
+      resolve({
+        code,
+        stdout: Buffer.concat(out).toString("utf8"),
+        error: spawnError
+          ? `Could not start yt-dlp: ${spawnError.message}`
+          : lastError || errorLines.slice(-3).join(" | ") || `yt-dlp exited with code ${code}`,
+      });
+    };
+    proc.on("error", (e) => finish(null, e));
+    proc.on("close", (code) => finish(code));
+  });
+}
+
+// Language code without the region: "en-US" -> "en"
+function baseLanguage(code) {
+  return String(code || "").toLowerCase().split("-")[0];
+}
+
+// Select one caption track. Captions that people wrote are better than
+// automatic captions. Use the language of the video, then English.
+// For automatic captions, "<lang>-orig" is the speech recognition in the
+// spoken language. Most other automatic tracks are machine translations.
+function pickCaptionTrack(info) {
+  const videoLang = baseLanguage(info.language);
+  const manual = Object.keys(info.subtitles || {}).filter(
+    (key) => key !== "live_chat" && key !== "rechat"
+  );
+  const auto = Object.keys(info.automatic_captions || {});
+
+  const manualKey =
+    (videoLang && manual.find((key) => baseLanguage(key) === videoLang)) ||
+    manual.find((key) => baseLanguage(key) === "en") ||
+    manual[0];
+  if (manualKey) return { key: manualKey, automatic: false };
+
+  const autoKey =
+    auto.find((key) => key.endsWith("-orig")) ||
+    (info.language && auto.find((key) => key === info.language)) ||
+    (videoLang && auto.find((key) => key === videoLang)) ||
+    auto.find((key) => key === "en");
+  if (autoKey) return { key: autoKey, automatic: true };
+
+  return null;
+}
+
+// "1:02:03" or "2:03"
+function formatTimestamp(ms) {
+  const total = Math.floor(ms / 1000);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = String(total % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
+}
+
+function decodeEntities(text) {
+  return text
+    .replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+// YouTube JSON3 captions -> [{ start (ms), text }]
+function parseJson3(raw) {
+  const data = JSON.parse(raw);
+  const cues = [];
+  for (const event of data.events || []) {
+    if (!Array.isArray(event.segs)) continue;
+    const text = event.segs
+      .map((seg) => seg.utf8 || "")
+      .join("")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text) cues.push({ start: event.tStartMs || 0, text });
+  }
+  return cues;
+}
+
+function parseTime(text) {
+  const parts = text.replace(",", ".").split(":").map(Number);
+  let seconds = 0;
+  for (const part of parts) seconds = seconds * 60 + part;
+  return Math.round(seconds * 1000);
+}
+
+// WebVTT or SRT captions (other sites) -> [{ start (ms), text }]
+function parseVttOrSrt(raw) {
+  const cues = [];
+  for (const block of raw.replace(/\r/g, "").split(/\n\n+/)) {
+    const lines = block.split("\n");
+    const timeIndex = lines.findIndex((line) => line.includes("-->"));
+    if (timeIndex < 0) continue;
+    const start = parseTime(lines[timeIndex].split("-->")[0].trim());
+    const text = decodeEntities(
+      lines
+        .slice(timeIndex + 1)
+        .join(" ")
+        .replace(/<[^>]*>/g, "")
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text) cues.push({ start, text });
+  }
+  return cues;
+}
+
+// Captions -> text with a time stamp at the start of each paragraph.
+function captionsToText(cues) {
+  const paragraphs = [];
+  let current = null;
+  let previous = "";
+  for (const cue of cues) {
+    let text = cue.text;
+    if (text === previous) continue;
+    // Rolling captions repeat the end of the previous cue. Remove it.
+    if (previous && text.startsWith(previous)) {
+      text = text.slice(previous.length).trim();
+    }
+    previous = cue.text;
+    if (!text) continue;
+
+    const elapsed = current ? cue.start - current.start : 0;
+    const sentenceEnd = current && /[.!?]["')\]]?$/.test(current.words[current.words.length - 1]);
+    if (!current || elapsed >= 60000 || (elapsed >= 20000 && sentenceEnd)) {
+      current = { start: cue.start, words: [] };
+      paragraphs.push(current);
+    }
+    current.words.push(text);
+  }
+  return paragraphs
+    .map((p) => `[${formatTimestamp(p.start)}] ${p.words.join(" ")}`)
+    .join("\n\n");
+}
+
+async function runTranscript(item) {
+  const { id, url } = item;
+  const workDir = path.join(os.tmpdir(), `framedl-transcript-${id}`);
+  const infoPath = path.join(workDir, "info.json");
+  let title = item.title || url;
+
+  const fail = (error) => {
+    if (quitting) return; // The item stays in the saved queue.
+    queue = queue.filter((q) => q !== item);
+    completeItem(item, {
+      success: false,
+      filePath: "",
+      title,
+      error: item.cancelled ? "Cancelled" : error,
+    });
+  };
+
+  try {
+    fs.rmSync(workDir, { recursive: true, force: true });
+    fs.mkdirSync(workDir, { recursive: true });
+
+    // Step 1: video information
+    const infoArgs = [url, "--dump-single-json", "--no-playlist", "--ffmpeg-location", getFfmpegDir()];
+    if (appData.settings.cookieBrowser) {
+      infoArgs.push("--cookies-from-browser", appData.settings.cookieBrowser);
+    }
+    const step1 = await runYtDlp(item, infoArgs);
+    if (item.cancelled || quitting) return fail("Cancelled");
+    if (step1.code !== 0) return fail(step1.error);
+
+    let info;
+    try {
+      info = JSON.parse(step1.stdout);
+    } catch {
+      return fail("yt-dlp did not give video information.");
+    }
+    if (info._type === "playlist") {
+      return fail("A transcript is for one video. This address is a playlist.");
+    }
+    if (info.title) {
+      item.title = cleanTitle(info.title);
+      title = item.title;
+      queueChanged();
+    }
+
+    const track = pickCaptionTrack(info);
+    if (!track) return fail("This video has no captions.");
+    fs.writeFileSync(infoPath, step1.stdout);
+
+    // Step 2: the caption track. yt-dlp writes the track next to the media
+    // file name first and then moves it to the "subtitle:" path. Thus both
+    // paths are in the work folder, and yt-dlp writes nothing in the
+    // download folder. The media file name (from the user's template) gives
+    // the name of the text file.
+    const mediaDir = path.join(workDir, "media");
+    const subArgs = [
+      "--load-info-json",
+      infoPath,
+      "--skip-download",
+      "--no-simulate",
+      track.automatic ? "--write-auto-subs" : "--write-subs",
+      "--sub-langs",
+      // A regular expression. Escape characters such as "." and "+".
+      `^${track.key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+      "--sub-format",
+      "json3/vtt/srt",
+      "-o",
+      `subtitle:${path.join(workDir, "captions.%(ext)s")}`,
+      "-o",
+      path.join(mediaDir, appData.settings.filenameTemplate),
+      "--print",
+      "video:filename=%(filename)s",
+    ];
+    if (appData.settings.cookieBrowser) {
+      subArgs.push("--cookies-from-browser", appData.settings.cookieBrowser);
+    }
+    const step2 = await runYtDlp(item, subArgs);
+    if (item.cancelled || quitting) return fail("Cancelled");
+    if (step2.code !== 0) return fail(step2.error);
+
+    const captionFile = fs
+      .readdirSync(workDir)
+      .find((name) => name.startsWith("captions.") && /\.(json3|vtt|srt)$/.test(name));
+    if (!captionFile) return fail("yt-dlp did not download the captions.");
+    const raw = fs.readFileSync(path.join(workDir, captionFile), "utf8");
+    const cues = captionFile.endsWith(".json3") ? parseJson3(raw) : parseVttOrSrt(raw);
+    const body = captionsToText(cues);
+    if (!body) return fail("The captions are empty.");
+
+    const nameMatch = step2.stdout.match(/^filename=(.+)$/m);
+    // The template can include folders ("%(uploader)s/%(title)s.%(ext)s").
+    let relativeName = nameMatch ? path.relative(mediaDir, nameMatch[1].trim()) : "";
+    if (!relativeName || relativeName.startsWith("..") || path.isAbsolute(relativeName)) {
+      relativeName = `${id}.txt`;
+    }
+    const textPath = path.join(
+      appData.settings.downloadPath,
+      relativeName.replace(/\.[^./]*$/, "") + ".txt"
+    );
+
+    const source = track.automatic ? "automatic captions" : "captions";
+    const header = [
+      info.title || title,
+      info.webpage_url || url,
+      `Language: ${track.key.replace(/-orig$/, "")} (${source})`,
+    ].join("\n");
+    fs.mkdirSync(path.dirname(textPath), { recursive: true });
+    fs.writeFileSync(textPath, `${header}\n\n${body}\n`);
+
+    queue = queue.filter((q) => q !== item);
+    completeItem(item, {
+      success: true,
+      filePath: textPath,
+      title: path.basename(textPath),
+    });
+  } catch (e) {
+    fail(e.message);
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
 }
 
 ipcMain.handle("queue-get", () => publicQueue());

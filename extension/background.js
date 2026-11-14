@@ -1,6 +1,7 @@
 // FrameDL browser extension.
 // Toolbar button: send the current page URL to the FrameDL app as a video download.
-// Right-click the toolbar button: download audio only (MP3).
+// Right-click the toolbar button: download audio only (MP3), or get a
+// transcript from the video captions.
 
 // "localhost" is common to all user accounts on the Mac. Each account that
 // runs FrameDL has one of these ports. The token makes sure that the request
@@ -9,12 +10,18 @@
 // of the account that clicked it.
 const PORTS = [47631, 47632, 47633, 47634, 47635];
 const MP3_MENU_ID = "framedl-mp3";
+const TRANSCRIPT_MENU_ID = "framedl-transcript";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: MP3_MENU_ID,
       title: "Download audio only (MP3)",
+      contexts: ["action"],
+    });
+    chrome.contextMenus.create({
+      id: TRANSCRIPT_MENU_ID,
+      title: "Get transcript (text)",
       contexts: ["action"],
     });
   });
@@ -24,6 +31,7 @@ chrome.action.onClicked.addListener((tab) => send(tab, "video"));
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
   if (info.menuItemId === MP3_MENU_ID) send(tab, "mp3");
+  if (info.menuItemId === TRANSCRIPT_MENU_ID) send(tab, "transcript");
 });
 
 async function getToken() {

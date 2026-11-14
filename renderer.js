@@ -153,7 +153,7 @@ window.ytdlp.onDownloadProgress((progress) => {
   const el = activeDownloadsEl.querySelector(
     `.download-item[data-id="${CSS.escape(item.id)}"]`
   );
-  if (!el) return;
+  if (!el || !el.querySelector(".progress-fill")) return;
   el.querySelector(".progress-fill").style.width = `${item.percent}%`;
   el.querySelector(".progress-amount").textContent = amountText(item);
   el.querySelector(".progress-rate").textContent = rateText(item);
@@ -165,7 +165,9 @@ function renderAll() {
 }
 
 function formatLabel(format) {
-  return format === "mp3" ? "🎵 MP3" : "🎬 Video";
+  if (format === "mp3") return "🎵 MP3";
+  if (format === "transcript") return "📝 Transcript";
+  return "🎬 Video";
 }
 
 function amountText(d) {
@@ -225,6 +227,7 @@ function renderActiveDownloads() {
         <span class="download-item-title" title="${escapeHtml(d.url)}">${escapeHtml(d.title || d.url)}</span>
         <span class="download-item-format">${formatLabel(d.format)}</span>
       </div>
+      ${d.format === "transcript" ? '<div class="hint">Getting the captions...</div>' : `
       <div class="progress-container">
         <div class="progress-bar">
           <div class="progress-fill" style="width: ${d.percent}%"></div>
@@ -233,7 +236,7 @@ function renderActiveDownloads() {
           <span class="progress-amount">${escapeHtml(amountText(d))}</span>
           <span class="progress-rate">${escapeHtml(rateText(d))}</span>
         </div>
-      </div>
+      </div>`}
       <button class="btn small danger cancel-download" data-id="${escapeHtml(d.id)}" style="margin-top: 10px">Cancel</button>
     </div>
   `
@@ -254,7 +257,7 @@ function historyItemHtml(item) {
         <span class="history-item-title">${escapeHtml(item.title || item.url)}</span>
         <span class="history-item-date">${new Date(item.date).toLocaleString()}</span>
       </div>
-      <div class="hint">${item.success ? "✓ Downloaded" : "✗ Failed"} • ${item.format === "mp3" ? "MP3" : "Video"}</div>
+      <div class="hint">${item.success ? "✓ Done" : "✗ Failed"} • ${formatLabel(item.format)}</div>
       ${item.error ? `<div class="hint" style="color: #ff6b6b; margin-top: 4px; font-size: 0.8em; word-break: break-all;">${escapeHtml(item.error)}</div>` : ""}
     </div>
   `;
