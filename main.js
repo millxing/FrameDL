@@ -941,8 +941,12 @@ function baseLanguage(code) {
 
 // Select one caption track. Captions that people wrote are better than
 // automatic captions. Use the language of the video, then English.
-// For automatic captions, "<lang>-orig" is the speech recognition in the
-// spoken language. Most other automatic tracks are machine translations.
+// For automatic captions, "<lang>-orig" is YouTube's speech recognition.
+// Most other automatic tracks are machine translations of it. YouTube can
+// get the language wrong, for example on a video with dubbed audio tracks
+// (an English video with "bn-orig"). If the "-orig" track is not in the
+// language of the video, a translation to the language of the video is
+// better than text in a different language.
 function pickCaptionTrack(info) {
   const videoLang = baseLanguage(info.language);
   const manual = Object.keys(info.subtitles || {}).filter(
@@ -956,14 +960,36 @@ function pickCaptionTrack(info) {
     manual[0];
   if (manualKey) return { key: manualKey, automatic: false };
 
+  const origKey = auto.find((key) => key.endsWith("-orig"));
   const autoKey =
-    auto.find((key) => key.endsWith("-orig")) ||
+    (origKey && (!videoLang || baseLanguage(origKey) === videoLang) && origKey) ||
     (info.language && auto.find((key) => key === info.language)) ||
     (videoLang && auto.find((key) => key === videoLang)) ||
+    origKey ||
     auto.find((key) => key === "en");
-  if (autoKey) return { key: autoKey, automatic: true };
+  if (autoKey) {
+    return {
+      key: autoKey,
+      automatic: true,
+      translatedFrom: translationSource(info.automatic_captions[autoKey]),
+    };
+  }
 
   return null;
+}
+
+// A YouTube caption address with "tlang=" is a machine translation. Its
+// "lang=" value is the language of the speech recognition.
+function translationSource(formats) {
+  for (const format of formats || []) {
+    try {
+      const params = new URL(format.url).searchParams;
+      if (params.get("tlang")) return params.get("lang") || "another language";
+    } catch {
+      // Not a URL. Ignore.
+    }
+  }
+  return "";
 }
 
 // "1:02:03" or "2:03"
@@ -1102,7 +1128,7 @@ async function runTranscript(item) {
       queueChanged();
     }
 
-    const track = pickCaptionTrack(info);
+    let track = pickCaptionTrack(info);
     if (!track) return fail("This video has no captions.");
     fs.writeFileSync(infoPath, step1.stdout);
 
@@ -1112,7 +1138,7 @@ async function runTranscript(item) {
     // download folder. The media file name (from the user's template) gives
     // the name of the text file.
     const mediaDir = path.join(workDir, "media");
-    const subArgs = [
+    const subArgs = (track) => [
       "--load-info-json",
       infoPath,
       "--skip-download",
@@ -1129,12 +1155,27 @@ async function runTranscript(item) {
       path.join(mediaDir, appData.settings.filenameTemplate),
       "--print",
       "video:filename=%(filename)s",
+      ...(appData.settings.cookieBrowser
+        ? ["--cookies-from-browser", appData.settings.cookieBrowser]
+        : []),
     ];
-    if (appData.settings.cookieBrowser) {
-      subArgs.push("--cookies-from-browser", appData.settings.cookieBrowser);
-    }
-    const step2 = await runYtDlp(item, subArgs);
+    let step2 = await runYtDlp(item, subArgs(track));
     if (item.cancelled || quitting) return fail("Cancelled");
+
+    // YouTube often refuses machine translations (HTTP 429). Then use the
+    // speech recognition track, and say so in the file.
+    let translationRefused = "";
+    if (step2.code !== 0 && track.translatedFrom) {
+      const origKey = Object.keys(info.automatic_captions || {}).find((key) =>
+        key.endsWith("-orig")
+      );
+      if (origKey) {
+        translationRefused = track.key;
+        track = { key: origKey, automatic: true, translatedFrom: "" };
+        step2 = await runYtDlp(item, subArgs(track));
+        if (item.cancelled || quitting) return fail("Cancelled");
+      }
+    }
     if (step2.code !== 0) return fail(step2.error);
 
     const captionFile = fs
@@ -1157,11 +1198,21 @@ async function runTranscript(item) {
       relativeName.replace(/\.[^./]*$/, "") + ".txt"
     );
 
-    const source = track.automatic ? "automatic captions" : "captions";
+    let source = track.automatic ? "automatic captions" : "captions";
+    if (track.translatedFrom) {
+      source += `, machine translation from ${track.translatedFrom}`;
+    }
     const header = [
       info.title || title,
       info.webpage_url || url,
       `Language: ${track.key.replace(/-orig$/, "")} (${source})`,
+      ...(translationRefused
+        ? [
+            `The video is in "${info.language}", but YouTube has speech recognition only ` +
+              `in "${track.key.replace(/-orig$/, "")}". YouTube refused the translation ` +
+              `to "${translationRefused}".`,
+          ]
+        : []),
     ].join("\n");
     fs.mkdirSync(path.dirname(textPath), { recursive: true });
     fs.writeFileSync(textPath, `${header}\n\n${body}\n`);
