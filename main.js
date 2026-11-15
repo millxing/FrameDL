@@ -942,11 +942,9 @@ function baseLanguage(code) {
 // Select one caption track. Captions that people wrote are better than
 // automatic captions. Use the language of the video, then English.
 // For automatic captions, "<lang>-orig" is YouTube's speech recognition.
-// Most other automatic tracks are machine translations of it. YouTube can
-// get the language wrong, for example on a video with dubbed audio tracks
-// (an English video with "bn-orig"). If the "-orig" track is not in the
-// language of the video, a translation to the language of the video is
-// better than text in a different language.
+// Other automatic tracks are machine translations. A video with dubbed
+// audio tracks has one "-orig" track for each audio track (ar-orig,
+// bn-orig, en-orig, ...), so use the one in the language of the video.
 function pickCaptionTrack(info) {
   const videoLang = baseLanguage(info.language);
   const manual = Object.keys(info.subtitles || {}).filter(
@@ -960,12 +958,14 @@ function pickCaptionTrack(info) {
     manual[0];
   if (manualKey) return { key: manualKey, automatic: false };
 
-  const origKey = auto.find((key) => key.endsWith("-orig"));
+  const origKeys = auto.filter((key) => key.endsWith("-orig"));
   const autoKey =
-    (origKey && (!videoLang || baseLanguage(origKey) === videoLang) && origKey) ||
+    (videoLang && origKeys.find((key) => baseLanguage(key) === videoLang)) ||
+    (!videoLang && origKeys.length === 1 && origKeys[0]) ||
     (info.language && auto.find((key) => key === info.language)) ||
     (videoLang && auto.find((key) => key === videoLang)) ||
-    origKey ||
+    origKeys.find((key) => baseLanguage(key) === "en") ||
+    origKeys[0] ||
     auto.find((key) => key === "en");
   if (autoKey) {
     return {
@@ -1166,9 +1166,12 @@ async function runTranscript(item) {
     // speech recognition track, and say so in the file.
     let translationRefused = "";
     if (step2.code !== 0 && track.translatedFrom) {
-      const origKey = Object.keys(info.automatic_captions || {}).find((key) =>
+      // The track that the translation was made from
+      const origKeys = Object.keys(info.automatic_captions || {}).filter((key) =>
         key.endsWith("-orig")
       );
+      const origKey =
+        origKeys.find((key) => key === `${track.translatedFrom}-orig`) || origKeys[0];
       if (origKey) {
         translationRefused = track.key;
         track = { key: origKey, automatic: true, translatedFrom: "" };
@@ -1208,9 +1211,8 @@ async function runTranscript(item) {
       `Language: ${track.key.replace(/-orig$/, "")} (${source})`,
       ...(translationRefused
         ? [
-            `The video is in "${info.language}", but YouTube has speech recognition only ` +
-              `in "${track.key.replace(/-orig$/, "")}". YouTube refused the translation ` +
-              `to "${translationRefused}".`,
+            `YouTube refused the machine translation to "${translationRefused}". ` +
+              `This text is YouTube's speech recognition in "${track.key.replace(/-orig$/, "")}".`,
           ]
         : []),
     ].join("\n");
