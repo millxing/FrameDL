@@ -7,7 +7,7 @@ FrameDL is a window on top of [yt-dlp](https://github.com/yt-dlp/yt-dlp). It inc
 ## Features
 
 - Download a video (MP4) or audio only (MP3) from a page address or a playlist.
-- Get a transcript of a video as a text file, with a time stamp at the start of each paragraph. See [Transcripts](#transcripts).
+- Get a separate transcript text file for each captioned video in a playlist or for a single video, with a time stamp at the start of each paragraph. See [Transcripts](#transcripts).
 - Queue with three downloads at a time. Items that are not complete start again at the next launch.
 - Downloads continue when the window is closed. A notification shows the result.
 - Option to prefer H.264 video, which plays immediately in QuickTime.
@@ -56,7 +56,7 @@ The transcript comes from the captions of the video. FrameDL does not download t
 - It uses the spoken language of the video. If that language is not available, it uses English.
 - YouTube makes automatic captions for most videos. Other sites must have captions in the video page.
 - The text file has the same name as the video file would have, with the `.txt` extension. The first lines give the title, the address and the caption language.
-- A transcript is for one video. A playlist address gives an error.
+- To get playlist transcripts, paste the playlist page address and select **Transcript**. FrameDL queues each video and adds its playlist position to the start of its file name. History shows the result for each video. A missing caption track does not stop the other videos.
 
 If a video has no captions, the result is "This video has no captions." For these videos, download the audio (MP3) and open it in a speech-to-text app, for example MacWhisper.
 

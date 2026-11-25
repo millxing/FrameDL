@@ -600,6 +600,7 @@ let queue = (Array.isArray(appData.queue) ? appData.queue : [])
     url: item.url,
     format: normalizeFormat(item.format),
     noPlaylist: !!item.noPlaylist,
+    playlistIndex: item.playlistIndex,
     title: cleanTitle(item.title),
     status: "pending",
   }));
@@ -620,27 +621,32 @@ function publicQueue() {
 }
 
 function queueChanged() {
-  appData.queue = queue.map(({ id, url, title, format, noPlaylist }) => ({
+  appData.queue = queue.map(({ id, url, title, format, noPlaylist, playlistIndex }) => ({
     id,
     url,
     title,
     format,
     noPlaylist,
+    playlistIndex,
   }));
   saveData(appData);
   sendToWindow("queue-changed", publicQueue());
 }
 
-function addToQueue({ url, format, noPlaylist, title }) {
-  queue.push({
+function makeQueueItem({ url, format, noPlaylist, title, playlistIndex }) {
+  return {
     id: `${Date.now()}-${idCounter++}`,
     url,
     format: normalizeFormat(format),
-    // A transcript is always for one video.
     noPlaylist: !!noPlaylist || format === "transcript",
+    playlistIndex,
     title: cleanTitle(title),
     status: "pending",
-  });
+  };
+}
+
+function addToQueue(request) {
+  queue.push(makeQueueItem(request));
   queueChanged();
   processQueue();
 }
@@ -1104,8 +1110,9 @@ async function runTranscript(item) {
     fs.rmSync(workDir, { recursive: true, force: true });
     fs.mkdirSync(workDir, { recursive: true });
 
-    // Step 1: video information
-    const infoArgs = [url, "--dump-single-json", "--no-playlist", "--ffmpeg-location", getFfmpegDir()];
+    // List playlist entries without fetching full metadata for every video.
+    // A watch URL that also names a playlist still selects only the video.
+    const infoArgs = [url, "--dump-single-json", "--flat-playlist", "--no-playlist", "--ffmpeg-location", getFfmpegDir()];
     if (appData.settings.cookieBrowser) {
       infoArgs.push("--cookies-from-browser", appData.settings.cookieBrowser);
     }
@@ -1120,7 +1127,27 @@ async function runTranscript(item) {
       return fail("yt-dlp did not give video information.");
     }
     if (info._type === "playlist") {
-      return fail("A transcript is for one video. This address is a playlist.");
+      if (item.playlistIndex) return fail("This playlist entry did not resolve to a video.");
+      const children = [];
+      for (const [index, entry] of (info.entries || []).entries()) {
+        const videoUrl = [entry?.webpage_url, entry?.url].find(
+          (value) => typeof value === "string" && /^https?:\/\//i.test(value) && value !== url
+        );
+        if (!videoUrl) continue;
+        children.push(makeQueueItem({
+          url: videoUrl,
+          title: entry.title,
+          format: "transcript",
+          noPlaylist: true,
+          playlistIndex: index + 1,
+        }));
+      }
+      if (!children.length) return fail("This playlist has no accessible video links.");
+      // Save the replacement in one update so a restart resumes individual videos.
+      queue = queue.flatMap((q) => q === item ? children : [q]);
+      queueChanged();
+      processQueue();
+      return;
     }
     if (info.title) {
       item.title = cleanTitle(info.title);
@@ -1196,10 +1223,9 @@ async function runTranscript(item) {
     if (!relativeName || relativeName.startsWith("..") || path.isAbsolute(relativeName)) {
       relativeName = `${id}.txt`;
     }
-    const textPath = path.join(
-      appData.settings.downloadPath,
-      relativeName.replace(/\.[^./]*$/, "") + ".txt"
-    );
+    const parsedName = path.parse(relativeName);
+    const prefix = item.playlistIndex ? String(item.playlistIndex).padStart(3, "0") + " - " : "";
+    const textPath = path.join(appData.settings.downloadPath, parsedName.dir, prefix + parsedName.name + ".txt");
 
     let source = track.automatic ? "automatic captions" : "captions";
     if (track.translatedFrom) {
